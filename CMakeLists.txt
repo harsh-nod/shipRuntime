@@ -2,5 +2,15 @@ cmake_minimum_required(VERSION 3.20...3.27)
 project(shipRuntime VERSION 1.0 LANGUAGES CXX)
 
 add_executable(shipRuntime hip_benchmark.cc)
-target_link_libraries(shipRuntime PRIVATE)
+find_package(hip REQUIRED )
+find_package(OpenMP REQUIRED )
+
+# Set compiler and linker
+set(CMAKE_CXX_COMPILER ${HIP_HIPCC_EXECUTABLE})
+set(CMAKE_CXX_LINKER   ${HIP_HIPCC_EXECUTABLE})
+
+set(HIP_LIBS hip::host)
+set(OMP_LIBS OpenMP::OpenMP_CXX)
+add_definitions(-D__HIP_PLATFORM_AMD__)
+target_link_directories(shipRuntime PRIVATE ${HIP_LIBS} ${OMP_LIBS})
 

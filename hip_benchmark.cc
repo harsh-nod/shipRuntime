@@ -1,7 +1,27 @@
 #include <iostream>
-#include <hip/hip_ext.h>
+#include <vector>
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
+
+using float16_t = _Float16;
+
+#ifndef CHECK_HIP_ERROR
+#define CHECK_HIP_ERROR(status)                   \
+    if(status != hipSuccess)                      \
+    {                                             \
+        fprintf(stderr,                           \
+                "hip error: '%s'(%d) at %s:%d\n", \
+                hipGetErrorString(status),        \
+                status,                           \
+                __FILE__,                         \
+                __LINE__);                        \
+        exit(EXIT_FAILURE);                       \
+    }
+#endif
+
+inline double calculateGFlops(uint32_t m, uint32_t n, uint32_t k) {
+    return 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k) * 1.0e-9;
+}
 
 template <typename DataT>
 __host__ static inline void fillRand(DataT* mat, uint32_t m, uint32_t n)
@@ -27,7 +47,7 @@ __host__ static inline void fillRand(DataT* mat, uint32_t m, uint32_t n)
     }
 }
 
-void benchmark_module(int M, int N, int K) {
+void benchmark_module(int m, int n, int k) {
 
     // Initialize input matrices
     std::vector<float16_t> matrixA(m * k);
@@ -63,6 +83,30 @@ void benchmark_module(int M, int N, int K) {
     CHECK_HIP_ERROR(hipMemcpy(d_c, matrixC.data(), bytesC, hipMemcpyHostToDevice));
     CHECK_HIP_ERROR(hipMemcpy(d_d, matrixD.data(), bytesD, hipMemcpyHostToDevice));
 
+    std::cout << "Launching GEMM kernel..." << std::endl;
+
+    hipEvent_t startEvent, stopEvent;
+    CHECK_HIP_ERROR(hipEventCreate(&startEvent));
+    CHECK_HIP_ERROR(hipEventCreate(&stopEvent));
+
+    auto elapsedTimeMs = 0.0f;
+    CHECK_HIP_ERROR(hipEventSynchronize(stopEvent));
+    CHECK_HIP_ERROR(hipEventElapsedTime(&elapsedTimeMs, startEvent, stopEvent));
+    CHECK_HIP_ERROR(hipEventDestroy(startEvent));
+    CHECK_HIP_ERROR(hipEventDestroy(stopEvent));
+
+    // GEMM flops converge to 2*mnk
+    auto gFlops       = calculateGFlops(m, n, k);
+    auto tFlopsPerSec = gFlops / static_cast<double>(elapsedTimeMs);
+
+    // Release device memory
+    CHECK_HIP_ERROR(hipFree(d_a));
+    CHECK_HIP_ERROR(hipFree(d_b));
+    CHECK_HIP_ERROR(hipFree(d_c));
+    CHECK_HIP_ERROR(hipFree(d_d));
+
+    std::cout << "TFLOPS/sec = " << tFlopsPerSec << std::endl;
+    std::cout << "Finished!" << std::endl;
 
 }
 
