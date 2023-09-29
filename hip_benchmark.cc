@@ -3,6 +3,9 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 
+// Large parts of this code have been borrowed from
+// the rocWMMA repository.
+
 using float16_t = _Float16;
 
 #ifndef CHECK_HIP_ERROR
@@ -18,6 +21,59 @@ using float16_t = _Float16;
         exit(EXIT_FAILURE);                       \
     }
 #endif
+
+enum layout {
+    row_major = 0,
+    col_major = 1,
+};
+
+// Host GEMM validation
+template <typename InputT,
+          typename OutputT,
+          typename ComputeT,
+          typename LayoutA,
+          typename LayoutB,
+          typename LayoutC,
+          typename LayoutD = LayoutC>
+__host__ void gemm_cpu_h(uint32_t       m,
+                         uint32_t       n,
+                         uint32_t       k,
+                         InputT const*  a,
+                         InputT const*  b,
+                         OutputT const* c,
+                         OutputT*       d,
+                         uint32_t       lda,
+                         uint32_t       ldb,
+                         uint32_t       ldc,
+                         uint32_t       ldd,
+                         ComputeT       alpha,
+                         ComputeT       beta)
+{
+    auto rowMjr = [](uint32_t row, uint32_t col, uint32_t ld) { return row * ld + col; };
+    auto colMjr = [](uint32_t row, uint32_t col, uint32_t ld) { return col * ld + row; };
+
+    auto aIndex = std::is_same<LayoutA, row_major>::value ? rowMjr : colMjr;
+    auto bIndex = std::is_same<LayoutB, row_major>::value ? rowMjr : colMjr;
+    auto cIndex = std::is_same<LayoutC, row_major>::value ? rowMjr : colMjr;
+    auto dIndex = std::is_same<LayoutD, row_major>::value ? rowMjr : colMjr;
+
+#pragma omp parallel for
+    for(int i = 0; i < m; ++i)
+    {
+#pragma omp parallel for
+        for(int j = 0; j < n; ++j)
+        {
+            ComputeT accum = static_cast<ComputeT>(0);
+            for(int h = 0; h < k; ++h)
+            {
+                accum += static_cast<ComputeT>(a[aIndex(i, h, lda)])
+                         * static_cast<ComputeT>(b[bIndex(h, j, ldb)]);
+            }
+            d[dIndex(i, j, ldd)] = static_cast<OutputT>(
+                alpha * accum + beta * static_cast<ComputeT>(c[cIndex(i, j, ldc)]));
+        }
+    }
+}
 
 inline double calculateGFlops(uint32_t m, uint32_t n, uint32_t k) {
     return 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k) * 1.0e-9;
@@ -98,6 +154,41 @@ void benchmark_module(int m, int n, int k) {
     // GEMM flops converge to 2*mnk
     auto gFlops       = calculateGFlops(m, n, k);
     auto tFlopsPerSec = gFlops / static_cast<double>(elapsedTimeMs);
+
+    #if !NDEBUG
+
+    std::cout << "Validating result with reference..." << std::endl;
+
+    // Bring kernel result back to host
+    CHECK_HIP_ERROR(hipMemcpy(matrixD.data(), d_d, bytesD, hipMemcpyDeviceToHost));
+
+    // Setup and run reference computation
+    std::vector<float16_t> matrixD_ref(m * n, std::numeric_limits<float16_t>::signaling_NaN());
+    gemm_cpu_h<float16_t, float16_t, float32_t, row_major, col_major, row_major>(m,
+                                                                                 n,
+                                                                                 k,
+                                                                                 matrixA.data(),
+                                                                                 matrixB.data(),
+                                                                                 matrixC.data(),
+                                                                                 matrixD_ref.data(),
+                                                                                 lda,
+                                                                                 ldb,
+                                                                                 ldc,
+                                                                                 ldd,
+                                                                                 alpha,
+                                                                                 beta);
+
+    auto res = compareEqual<float16_t>(matrixD.data(), matrixD_ref.data(), m * n);
+
+    if(std::get<0>(res) == false) {
+        std::cout << "FAILED!\n";
+    } else {
+        std::cout << "PASSED!\n";
+    }
+
+    std::cout << "Max relative error: " << std::get<1>(res) << std::endl;
+
+#endif // !NDEBUG
 
     // Release device memory
     CHECK_HIP_ERROR(hipFree(d_a));
