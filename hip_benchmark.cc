@@ -2,11 +2,14 @@
 #include <vector>
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
+#include <mutex>
 
 // Large parts of this code have been borrowed from
 // the rocWMMA repository.
 
 using float16_t = _Float16;
+using float32_t = float;
+constexpr uint32_t recordRuns = 100u;
 
 #ifndef CHECK_HIP_ERROR
 #define CHECK_HIP_ERROR(status)                   \
@@ -22,10 +25,80 @@ using float16_t = _Float16;
     }
 #endif
 
-enum layout {
-    row_major = 0,
-    col_major = 1,
-};
+template <typename DataT>
+std::pair<bool, double>
+compareEqual(DataT const* a, DataT const* b, uint32_t size, double tolerance = 10.0) {
+    bool   retval             = true;
+    double max_relative_error = 0.0;
+
+    // Some types don't have direct conversion to double.
+    // Convert to float first then to double.
+    auto toDouble = [](DataT const& val) { return static_cast<double>(static_cast<float>(val)); };
+
+    bool       isInf = false;
+    bool       isNaN = false;
+    std::mutex writeMutex;
+
+#pragma omp parallel for
+    for(int i = 0; i < size; ++i)
+    {
+        auto valA = a[i];
+        auto valB = b[i];
+
+        auto numerator = fabs(toDouble(valA) - toDouble(valB));
+        auto divisor   = fabs(toDouble(valA)) + fabs(toDouble(valB)) + 1.0;
+
+        if(std::isinf(numerator) || std::isinf(divisor))
+        {
+#pragma omp atomic
+            isInf |= true;
+        }
+        else
+        {
+            auto relative_error = numerator / divisor;
+            if(std::isnan(relative_error))
+            {
+#pragma omp atomic
+                isNaN |= true;
+            }
+            else if(relative_error > max_relative_error)
+            {
+                const std::lock_guard<std::mutex> guard(writeMutex);
+                // Double check in case of stall
+                if(relative_error > max_relative_error)
+                {
+                    max_relative_error = relative_error;
+                }
+            }
+        }
+
+        if(isInf || isNaN)
+        {
+            i = size;
+        }
+    }
+
+    auto eps = toDouble(std::numeric_limits<DataT>::epsilon());
+    if(isInf)
+    {
+        retval             = false;
+        max_relative_error = std::numeric_limits<DataT>::infinity();
+    }
+    else if(isNaN)
+    {
+        retval             = false;
+        max_relative_error = std::numeric_limits<DataT>::signaling_NaN();
+    }
+    else if(max_relative_error > (eps * tolerance))
+    {
+        retval = false;
+    }
+
+    return std::make_pair(retval, max_relative_error);
+}
+
+struct row_major{};
+struct col_major{};
 
 // Host GEMM validation
 template <typename InputT,
@@ -167,10 +240,7 @@ void benchmark_module(int m, int n, int k) {
     auto gFlops       = calculateGFlops(m, n, k);
     auto tFlopsPerSec = calculateTFlopsPerSec(m, n, k, static_cast<double>(elapsedTimeMs), recordRuns);
 
-    CHECK_HIP_ERROR(hipEventDestroy(startEvent));
-    CHECK_HIP_ERROR(hipEventDestroy(stopEvent));
-
-    #if !NDEBUG
+#if !NDEBUG
 
     std::cout << "Validating result with reference..." << std::endl;
 
@@ -179,6 +249,12 @@ void benchmark_module(int m, int n, int k) {
 
     // Setup and run reference computation
     std::vector<float16_t> matrixD_ref(m * n, std::numeric_limits<float16_t>::signaling_NaN());
+    int lda = k;
+    int ldb = k;
+    int ldc = n;
+    int ldd = ldc;
+    float alpha = 1.0;
+    float beta = 1.0;
     gemm_cpu_h<float16_t, float16_t, float32_t, row_major, col_major, row_major>(m,
                                                                                  n,
                                                                                  k,
