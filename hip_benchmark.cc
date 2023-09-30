@@ -79,6 +79,12 @@ inline double calculateGFlops(uint32_t m, uint32_t n, uint32_t k) {
     return 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k) * 1.0e-9;
 }
 
+inline double calculateTFlopsPerSec(
+    uint32_t m, uint32_t n, uint32_t k, double elapsedTimeMs, uint32_t repeats = 1u) {
+    // elapsedTimeMs is over all iterations
+    return calculateGFlops(m, n, k) / elapsedTimeMs * static_cast<double>(repeats);
+}
+
 template <typename DataT>
 __host__ static inline void fillRand(DataT* mat, uint32_t m, uint32_t n)
 {
@@ -145,15 +151,24 @@ void benchmark_module(int m, int n, int k) {
     CHECK_HIP_ERROR(hipEventCreate(&startEvent));
     CHECK_HIP_ERROR(hipEventCreate(&stopEvent));
 
-    auto elapsedTimeMs = 0.0f;
+    CHECK_HIP_ERROR(hipEventRecord(startEvent));
+    for (uint32_t i = 0; i < recordRuns; ++i) {
+      // Call kernel here
+    }
+    CHECK_HIP_ERROR(hipEventRecord(stopEvent));
     CHECK_HIP_ERROR(hipEventSynchronize(stopEvent));
+
+    auto elapsedTimeMs = 0.0f;
     CHECK_HIP_ERROR(hipEventElapsedTime(&elapsedTimeMs, startEvent, stopEvent));
     CHECK_HIP_ERROR(hipEventDestroy(startEvent));
     CHECK_HIP_ERROR(hipEventDestroy(stopEvent));
 
     // GEMM flops converge to 2*mnk
     auto gFlops       = calculateGFlops(m, n, k);
-    auto tFlopsPerSec = gFlops / static_cast<double>(elapsedTimeMs);
+    auto tFlopsPerSec = calculateTFlopsPerSec(m, n, k, static_cast<double>(elapsedTimeMs), recordRuns);
+
+    CHECK_HIP_ERROR(hipEventDestroy(startEvent));
+    CHECK_HIP_ERROR(hipEventDestroy(stopEvent));
 
     #if !NDEBUG
 
