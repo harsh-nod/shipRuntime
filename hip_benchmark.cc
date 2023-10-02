@@ -180,7 +180,7 @@ __host__ static inline void fillRand(DataT* mat, uint32_t m, uint32_t n)
     }
 }
 
-void benchmark_module(int m, int n, int k, const char *data) {
+void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int blockX, int blockY, int blockZ, int sharedMemBytes, const char *data) {
 
     // Initialize input matrices
     std::vector<float16_t> matrixA(m * k);
@@ -339,15 +339,25 @@ void benchmark_module(int m, int n, int k, const char *data) {
 }
 
 int main(int argc, char *argv[]) {
-  if (argc != 4) {
-    std::cout << "Usage: " << argv[0] << " M N K hsaco-file" << std::endl;
+  if (argc != 12) {
+    std::cout << "Usage: " << argv[0] << " M N K gX gY gZ bX bY bZ sMemBytes hsaco-file" << std::endl;
     return 1;
   }
   int M = atoi(argv[1]);
   int N = atoi(argv[2]);
   int K = atoi(argv[3]);
-  const char *data = argv[4];
+  int gridX = atoi(argv[4]);
+  int gridY = atoi(argv[5]);
+  int gridZ = atoi(argv[6]);
+  int blockX = atoi(argv[7]);
+  int blockY = atoi(argv[8]);
+  int blockZ = atoi(argv[9]);
+  int sharedMemBytes = atoi(argv[10]);
+  const char *data = argv[11];
   std::cout << "Benchmarking matmul with M = " << M << " , N = " << N << " , K = " << K << std::endl;
-  benchmark_module(M, N, K, data);
+  std::cout << "Launch Config: GridX = " << gridX << " , GridY = " << gridY << " , GridZ = " << gridZ << std::endl;
+  std::cout << "Launch Config: BlockX = " << blockX << " , BlockY = " << blockY << " , BlockZ = " << blockZ << std::endl;
+  std::cout << "Launch Config: SMemBytes = " << sharedMemBytes << std::endl;
+  benchmark_module(M, N, K, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemBytes, data);
   return 0;
 }
