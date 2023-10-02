@@ -106,8 +106,7 @@ template <typename InputT,
           typename ComputeT,
           typename LayoutA,
           typename LayoutB,
-          typename LayoutC,
-          typename LayoutD = LayoutC>
+          typename LayoutD>
 __host__ void gemm_cpu_h(uint32_t       m,
                          uint32_t       n,
                          uint32_t       k,
@@ -116,7 +115,6 @@ __host__ void gemm_cpu_h(uint32_t       m,
                          OutputT*       d,
                          uint32_t       lda,
                          uint32_t       ldb,
-                         uint32_t       ldc,
                          uint32_t       ldd,
                          ComputeT       alpha,
                          ComputeT       beta)
@@ -126,7 +124,6 @@ __host__ void gemm_cpu_h(uint32_t       m,
 
     auto aIndex = std::is_same<LayoutA, row_major>::value ? rowMjr : colMjr;
     auto bIndex = std::is_same<LayoutB, row_major>::value ? rowMjr : colMjr;
-    auto cIndex = std::is_same<LayoutC, row_major>::value ? rowMjr : colMjr;
     auto dIndex = std::is_same<LayoutD, row_major>::value ? rowMjr : colMjr;
 
 #pragma omp parallel for
@@ -216,7 +213,7 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
     // Open HSACO file
     FILE *hsaco_file;
     if ((hsaco_file = fopen(data, "rb")) == NULL) {
-      return NULL;
+      return;
     }
 
     // Read HSCAO file into Buffer
@@ -225,7 +222,8 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
     unsigned char *hsaco =
         (unsigned char *)malloc(hsaco_file_size * sizeof(unsigned char));
     rewind(hsaco_file);
-    fread(hsaco, sizeof(unsigned char), hsaco_file_size, hsaco_file);
+    size_t result = fread(hsaco, sizeof(unsigned char), hsaco_file_size, hsaco_file);
+    printf("Read %zu bytes\n", result);
     fclose(hsaco_file);
 
     // set HIP options
@@ -271,7 +269,7 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
     CHECK_HIP_ERROR(hipEventRecord(startEvent));
     uint64_t _stream;
     for (uint32_t i = 0; i < recordRuns; ++i) {
-      CHECK_HIP_ERROR(hipModuleLaunchKernel(function, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemoryBytes,
+      CHECK_HIP_ERROR(hipModuleLaunchKernel(function, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemBytes,
         nullptr, nullptr, (void **)&config));
     }
     CHECK_HIP_ERROR(hipEventRecord(stopEvent));
@@ -281,7 +279,7 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
     CHECK_HIP_ERROR(hipEventElapsedTime(&elapsedTimeMs, startEvent, stopEvent));
     CHECK_HIP_ERROR(hipEventDestroy(startEvent));
     CHECK_HIP_ERROR(hipEventDestroy(stopEvent));
-    CHECK_HIP_ERROR(hipModuleUnload());
+    CHECK_HIP_ERROR(hipModuleUnload(module));
 
     // GEMM flops converge to 2*mnk
     auto gFlops       = calculateGFlops(m, n, k);
@@ -295,28 +293,25 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
     CHECK_HIP_ERROR(hipMemcpy(matrixD.data(), d_d, bytesD, hipMemcpyDeviceToHost));
 
     // Setup and run reference computation
-    std::vector<float16_t> matrixD_ref(m * n, std::numeric_limits<float16_t>::signaling_NaN());
+    std::vector<float32_t> matrixD_ref(m * n, std::numeric_limits<float32_t>::signaling_NaN());
     int lda = k;
     int ldb = k;
-    int ldc = n;
-    int ldd = ldc;
+    int ldd = n;
     float alpha = 1.0;
     float beta = 1.0;
-    gemm_cpu_h<float16_t, float16_t, float32_t, row_major, col_major, row_major>(m,
+    gemm_cpu_h<float16_t, float32_t, float32_t, row_major, col_major, row_major>(m,
                                                                                  n,
                                                                                  k,
                                                                                  matrixA.data(),
                                                                                  matrixB.data(),
-                                                                                 matrixC.data(),
                                                                                  matrixD_ref.data(),
                                                                                  lda,
                                                                                  ldb,
-                                                                                 ldc,
                                                                                  ldd,
                                                                                  alpha,
                                                                                  beta);
 
-    auto res = compareEqual<float16_t>(matrixD.data(), matrixD_ref.data(), m * n);
+    auto res = compareEqual<float32_t>(matrixD.data(), matrixD_ref.data(), m * n);
 
     if(std::get<0>(res) == false) {
         std::cout << "FAILED!\n";
