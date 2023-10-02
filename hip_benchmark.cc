@@ -113,7 +113,6 @@ __host__ void gemm_cpu_h(uint32_t       m,
                          uint32_t       k,
                          InputT const*  a,
                          InputT const*  b,
-                         OutputT const* c,
                          OutputT*       d,
                          uint32_t       lda,
                          uint32_t       ldb,
@@ -142,8 +141,7 @@ __host__ void gemm_cpu_h(uint32_t       m,
                 accum += static_cast<ComputeT>(a[aIndex(i, h, lda)])
                          * static_cast<ComputeT>(b[bIndex(h, j, ldb)]);
             }
-            d[dIndex(i, j, ldd)] = static_cast<OutputT>(
-                alpha * accum + beta * static_cast<ComputeT>(c[cIndex(i, j, ldc)]));
+            d[dIndex(i, j, ldd)] = static_cast<OutputT>(alpha * accum );
         }
     }
 }
@@ -182,41 +180,87 @@ __host__ static inline void fillRand(DataT* mat, uint32_t m, uint32_t n)
     }
 }
 
-void benchmark_module(int m, int n, int k) {
+void benchmark_module(int m, int n, int k, const char *data) {
 
     // Initialize input matrices
     std::vector<float16_t> matrixA(m * k);
     std::vector<float16_t> matrixB(k * n);
-    std::vector<float16_t> matrixC(m * n);
     // Fill outputs with NaN to catch contamination
-    std::vector<float16_t> matrixD(m * n, std::numeric_limits<float16_t>::signaling_NaN());
+    std::vector<float32_t> matrixD(m * n, std::numeric_limits<float32_t>::signaling_NaN());
 
     fillRand(matrixA.data(), m, k);
     fillRand(matrixB.data(), k, n);
-    fillRand(matrixC.data(), m, n);
 
     std::cout << "Initializing device data..." << std::endl;
 
     // Allocate and copy device memory
     float16_t* d_a;
     float16_t* d_b;
-    float16_t* d_c;
-    float16_t* d_d;
+    float32_t* d_d;
 
     const size_t bytesA = matrixA.size() * sizeof(float16_t);
     const size_t bytesB = matrixB.size() * sizeof(float16_t);
-    const size_t bytesC = matrixC.size() * sizeof(float16_t);
-    const size_t bytesD = matrixD.size() * sizeof(float16_t);
+    const size_t bytesD = matrixD.size() * sizeof(float32_t);
 
     CHECK_HIP_ERROR(hipMalloc(&d_a, bytesA));
     CHECK_HIP_ERROR(hipMalloc(&d_b, bytesB));
-    CHECK_HIP_ERROR(hipMalloc(&d_c, bytesC));
     CHECK_HIP_ERROR(hipMalloc(&d_d, bytesD));
 
     CHECK_HIP_ERROR(hipMemcpy(d_a, matrixA.data(), bytesA, hipMemcpyHostToDevice));
     CHECK_HIP_ERROR(hipMemcpy(d_b, matrixB.data(), bytesB, hipMemcpyHostToDevice));
-    CHECK_HIP_ERROR(hipMemcpy(d_c, matrixC.data(), bytesC, hipMemcpyHostToDevice));
     CHECK_HIP_ERROR(hipMemcpy(d_d, matrixD.data(), bytesD, hipMemcpyHostToDevice));
+
+    hipModule_t module;
+    hipFunction_t function;
+    const char *name;
+    // Open HSACO file
+    FILE *hsaco_file;
+    if ((hsaco_file = fopen(data, "rb")) == NULL) {
+      return NULL;
+    }
+
+    // Read HSCAO file into Buffer
+    fseek(hsaco_file, 0L, SEEK_END);
+    size_t hsaco_file_size = ftell(hsaco_file);
+    unsigned char *hsaco =
+        (unsigned char *)malloc(hsaco_file_size * sizeof(unsigned char));
+    rewind(hsaco_file);
+    fread(hsaco, sizeof(unsigned char), hsaco_file_size, hsaco_file);
+    fclose(hsaco_file);
+
+    // set HIP options
+    hipJitOption opt[] = {hipJitOptionErrorLogBufferSizeBytes,
+                          hipJitOptionErrorLogBuffer,
+                          hipJitOptionInfoLogBufferSizeBytes,
+                          hipJitOptionInfoLogBuffer, hipJitOptionLogVerbose};
+    const unsigned int errbufsize = 8192;
+    const unsigned int logbufsize = 8192;
+    char _err[errbufsize];
+    char _log[logbufsize];
+    void *optval[] = {(void *)(uintptr_t)errbufsize, (void *)_err,
+                      (void *)(uintptr_t)logbufsize, (void *)_log, (void *)1};
+
+    CHECK_HIP_ERROR(hipModuleLoadDataEx(&module, hsaco, 5, opt, optval));
+    CHECK_HIP_ERROR(hipModuleGetFunction(&function, module, name));
+    free(hsaco);
+
+    // Create and fill array with kernel arguments
+    size_t offset = 0;
+    char args[256] = {};
+
+    *(reinterpret_cast<float16_t**>(&args[offset])) = d_a;
+    offset += sizeof(d_a);
+    *(reinterpret_cast<float16_t**>(&args[offset])) = d_b;
+    offset += sizeof(d_b);
+    *(reinterpret_cast<float32_t**>(&args[offset])) = d_d;
+    offset += sizeof(d_d);
+
+    // Create array with kernel arguments and its size.
+    void* config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER,
+                      args,
+                      HIP_LAUNCH_PARAM_BUFFER_SIZE,
+                      &offset,
+                      HIP_LAUNCH_PARAM_END};
 
     std::cout << "Launching GEMM kernel..." << std::endl;
 
@@ -225,8 +269,10 @@ void benchmark_module(int m, int n, int k) {
     CHECK_HIP_ERROR(hipEventCreate(&stopEvent));
 
     CHECK_HIP_ERROR(hipEventRecord(startEvent));
+    uint64_t _stream;
     for (uint32_t i = 0; i < recordRuns; ++i) {
-      // Call kernel here
+      CHECK_HIP_ERROR(hipModuleLaunchKernel(function, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemoryBytes,
+        nullptr, nullptr, (void **)&config));
     }
     CHECK_HIP_ERROR(hipEventRecord(stopEvent));
     CHECK_HIP_ERROR(hipEventSynchronize(stopEvent));
@@ -235,6 +281,7 @@ void benchmark_module(int m, int n, int k) {
     CHECK_HIP_ERROR(hipEventElapsedTime(&elapsedTimeMs, startEvent, stopEvent));
     CHECK_HIP_ERROR(hipEventDestroy(startEvent));
     CHECK_HIP_ERROR(hipEventDestroy(stopEvent));
+    CHECK_HIP_ERROR(hipModuleUnload());
 
     // GEMM flops converge to 2*mnk
     auto gFlops       = calculateGFlops(m, n, k);
@@ -284,7 +331,6 @@ void benchmark_module(int m, int n, int k) {
     // Release device memory
     CHECK_HIP_ERROR(hipFree(d_a));
     CHECK_HIP_ERROR(hipFree(d_b));
-    CHECK_HIP_ERROR(hipFree(d_c));
     CHECK_HIP_ERROR(hipFree(d_d));
 
     std::cout << "TFLOPS/sec = " << tFlopsPerSec << std::endl;
@@ -294,13 +340,14 @@ void benchmark_module(int m, int n, int k) {
 
 int main(int argc, char *argv[]) {
   if (argc != 4) {
-    std::cout << "Usage: " << argv[0] << " M N K" << std::endl;
+    std::cout << "Usage: " << argv[0] << " M N K hsaco-file" << std::endl;
     return 1;
   }
   int M = atoi(argv[1]);
   int N = atoi(argv[2]);
   int K = atoi(argv[3]);
+  const char *data = argv[4];
   std::cout << "Benchmarking matmul with M = " << M << " , N = " << N << " , K = " << K << std::endl;
-  benchmark_module(M, N, K);
+  benchmark_module(M, N, K, data);
   return 0;
 }
