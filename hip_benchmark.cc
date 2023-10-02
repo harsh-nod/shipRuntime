@@ -177,7 +177,7 @@ __host__ static inline void fillRand(DataT* mat, uint32_t m, uint32_t n)
     }
 }
 
-void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int blockX, int blockY, int blockZ, int sharedMemBytes, const char *data) {
+void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int blockX, int blockY, int blockZ, int sharedMemBytes, const char *data, const char *name) {
 
     // Initialize input matrices
     std::vector<float16_t> matrixA(m * k);
@@ -209,7 +209,6 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
 
     hipModule_t module;
     hipFunction_t function;
-    const char *name;
     // Open HSACO file
     FILE *hsaco_file;
     if ((hsaco_file = fopen(data, "rb")) == NULL) {
@@ -334,8 +333,8 @@ void benchmark_module(int m, int n, int k, int gridX, int gridY, int gridZ, int 
 }
 
 int main(int argc, char *argv[]) {
-  if (argc != 12) {
-    std::cout << "Usage: " << argv[0] << " M N K gX gY gZ bX bY bZ sMemBytes hsaco-file" << std::endl;
+  if (argc != 13) {
+    std::cout << "Usage: " << argv[0] << " M N K gX gY gZ bX bY bZ sMemBytes hsaco-file func-name" << std::endl;
     return 1;
   }
   int M = atoi(argv[1]);
@@ -349,10 +348,12 @@ int main(int argc, char *argv[]) {
   int blockZ = atoi(argv[9]);
   int sharedMemBytes = atoi(argv[10]);
   const char *data = argv[11];
+  const char *name = argv[12];
   std::cout << "Benchmarking matmul with M = " << M << " , N = " << N << " , K = " << K << std::endl;
   std::cout << "Launch Config: GridX = " << gridX << " , GridY = " << gridY << " , GridZ = " << gridZ << std::endl;
   std::cout << "Launch Config: BlockX = " << blockX << " , BlockY = " << blockY << " , BlockZ = " << blockZ << std::endl;
   std::cout << "Launch Config: SMemBytes = " << sharedMemBytes << std::endl;
-  benchmark_module(M, N, K, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemBytes, data);
+  std::cout << "Executing ... " << name << " from " << data << std::endl;
+  benchmark_module(M, N, K, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemBytes, data, name);
   return 0;
 }

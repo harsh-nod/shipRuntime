@@ -12,7 +12,7 @@ set(CMAKE_CXX_LINKER   ${HIP_HIPCC_EXECUTABLE})
 set(HIP_LIBS hip::host)
 set(OMP_LIBS OpenMP::OpenMP_CXX)
 add_definitions(-D__HIP_PLATFORM_AMD__)
-#add_definitions(-DNDEBUG)
+add_definitions(-DNDEBUG)
 target_link_directories(shipRuntime PUBLIC ${HIP_LIBS} ${OMP_LIBS})
 target_link_options(shipRuntime PUBLIC -fopenmp)
 
