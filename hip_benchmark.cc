@@ -9,7 +9,9 @@
 
 using float16_t = uint16_t;
 using float32_t = float;
-constexpr uint32_t recordRuns = 100u;
+// This number is the minimum number of iterations we can run
+// without being throttled
+constexpr uint32_t recordRuns = 5u;
 
 template <typename DataT>
 std::pair<bool, double>
